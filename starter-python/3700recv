@@ -30,10 +30,26 @@ sock.settimeout(TIMEOUT)
 UDP_PORT = sock.getsockname()[1]
 log("[bound] " + str(UDP_PORT))
 
-
 # message queue
 queue = {}
 expectedSequenceNum = 0
+queuedAcks = []
+
+# received counter for sending back an aggregated ack
+receivedCounter = 0
+
+def queueAcksToSend(msg, addr):
+  receivedCounter += 1
+  queuedAcks.append(msg)
+
+  if receivedCounter == 3:
+    ack = json.dumps({"acks": queuedAcks})
+    log("ABOUT TO SEND " + ack)
+      if sock.sendto(msg, addr) < len(msg):
+        log("[error] unable to fully send packet")
+
+    queuedAcks = []
+    receivedCounter = 0
 
 # Now listen for packets
 while True:
@@ -44,6 +60,7 @@ while True:
     (data, addr) = result
 
     try:
+
       # received message object
       decoded = json.loads(data)
 
@@ -67,10 +84,9 @@ while True:
           expectedSequenceNum += dataLength
 
         # Send back an ack to the sender
-        msg = json.dumps({"ack": decoded['sequence'] + len(msgData)})
-        log("ABOUT TO SEND " + msg)
-        if sock.sendto(msg, addr) < len(msg):
-          log("[error] unable to fully send packet")
+
+        msg = {"ack": decoded['sequence'] + len(msgData)}
+        queueAcksToSend(msg, addr)
 
         # Go through queued packets and see if we have the next packet(s)
         while expectedSequenceNum in queue:
@@ -82,11 +98,8 @@ while True:
       # we received an out of order packet - we add to the queue to processing at a later time
       else:
         queue[sequenceNum] = msgData
-
-        msg = json.dumps({"ack": decoded['sequence'] + len(msgData), "sack": expectedSequenceNum})
-        log("ABOUT TO SEND " + msg)
-        if sock.sendto(msg, addr) < len(msg):
-          log("[error] unable to fully send packet")
+        msg = {"ack": decoded['sequence'] + len(msgData), "sack": expectedSequenceNum}
+        queueAcksToSend(msg, addr)
 
     except (ValueError, KeyError, TypeError) as e:
       log("[recv corrupt packet]")

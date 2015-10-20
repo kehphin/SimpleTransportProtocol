@@ -32,11 +32,15 @@ def log(string):
 def send_next_packet():
   global SEQUENCE
 
+  # reading only DATA_SIZE bits at a time
   data = sys.stdin.read(DATA_SIZE)
   if (len(data) > 0):
+    # message object
     msg = json.dumps({"sequence": SEQUENCE, "data": data, "ack": False, "eof": False})
+    # offset
     SEQUENCE += len(data)
 
+    # send message
     if sock.sendto(msg, dest) < len(msg):
       log("[error] unable to fully send packet")
     else:

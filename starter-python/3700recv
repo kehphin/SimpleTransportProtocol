@@ -30,6 +30,11 @@ sock.settimeout(TIMEOUT)
 UDP_PORT = sock.getsockname()[1]
 log("[bound] " + str(UDP_PORT))
 
+
+# message queue
+queue = {}
+expectedSequenceNum = 0
+
 # Now listen for packets
 while True:
   result = sock.recvfrom(MSG_SIZE)
@@ -39,25 +44,49 @@ while True:
     (data, addr) = result
 
     try:
+      # received message object
       decoded = json.loads(data)
 
-      # If the EOF flag is set, exit
-      if (decoded['eof']):
-        log("[completed]")
-        sys.exit(0)
+      sequenceNum = decoded['sequence']
+      msgData = decoded['data']
+      dataLength = len(msgData)
 
-      # If there is data, we accept it and print it out
-      if (decoded['data']):
-        # If we receive data, we assume it's in-order
-        # You will need to do much more here
-        log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") ACCEPTED (in-order)")
-        sys.stdout.write(decoded['data'])
+      # if in order, we output normally
+      if expectedSequenceNum == sequenceNum:
+        # If the EOF flag is set, exit
+        if (decoded['eof']):
+          log("[completed]")
+          sys.exit(0)
 
-      # Send back an ack to the sender
-      msg = json.dumps({"ack": decoded['sequence'] + len(decoded['data'])})
-      log("ABOUT TO SEND " + msg)
-      if sock.sendto(msg, addr) < len(msg):
-        log("[error] unable to fully send packet")
+        # If there is data, we accept it and print it out
+        if (decoded['data']):
+          # If we receive data, we assume it's in-order
+          # You will need to do much more here
+          log("[recv data] " + str(sequenceNum) + " (" + str(dataLength) + ") ACCEPTED (in-order)")
+          sys.stdout.write(decoded['data'])
+          expectedSequenceNum += dataLength
+
+        # Send back an ack to the sender
+        msg = json.dumps({"ack": decoded['sequence'] + len(msgData)})
+        log("ABOUT TO SEND " + msg)
+        if sock.sendto(msg, addr) < len(msg):
+          log("[error] unable to fully send packet")
+
+        # Go through queued packets and see if we have the next packet(s)
+        while expectedSequenceNum in queue:
+          queueItemData = queue[expectedSequenceNum]
+          log("[recv data] " + str(sequenceNum) + " (" + str(dataLength) + ") ACCEPTED (out-order)")
+          sys.stdout.write(decoded['data'])
+          expectedSequenceNum += len(queueItemData)
+
+      # we received an out of order packet - we add to the queue to processing at a later time
+      else:
+        queue[sequenceNum] = msgData
+
+        msg = json.dumps({"ack": decoded['sequence'] + len(msgData), "sack": expectedSequenceNum})
+        log("ABOUT TO SEND " + msg)
+        if sock.sendto(msg, addr) < len(msg):
+          log("[error] unable to fully send packet")
 
     except (ValueError, KeyError, TypeError) as e:
       log("[recv corrupt packet]")

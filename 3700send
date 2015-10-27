@@ -1,0 +1,151 @@
+#!/usr/bin/python -u
+
+# Eric Ropiak & Yang Yang
+# CS3700
+# Project 3
+# Sender Code
+
+import sys
+import socket
+import time
+import datetime
+import select
+import json
+import zlib
+
+
+# Message Format
+# {"s": SEQUENCE, "d": data, "a": False, "e": False, "c": zlib.crc32(data)}
+# s=sequence, d=data, a=ack, e = eof, c = checksum
+
+# Contants
+MSG_SIZE = 1500
+DATA_SIZE = 1000
+TIMEOUT = 30
+SEQUENCE = 0
+SENDING_BUFFER = {}
+RTT = 400 # set inital rtt to half a second
+SENT_ALL_DATA_ONCE = False
+
+# Bind to localhost and an ephemeral port
+IP_PORT = sys.argv[1]
+UDP_IP = IP_PORT[0:IP_PORT.find(":")]
+UDP_PORT = int(IP_PORT[IP_PORT.find(":")+1:])
+dest = (UDP_IP, UDP_PORT)
+
+# Set up the socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
+sock.settimeout(TIMEOUT)
+
+def getTimestamp():
+  return int(time.time() * 1000)
+
+def log(string):
+  sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
+
+# sends the next packet
+def send_next_packet():
+  global SEQUENCE
+  global SENDING_BUFFER
+
+  data = sys.stdin.read(DATA_SIZE)
+  if (len(data) > 0):
+    jsonMsg = {"s": SEQUENCE, "d": data, "a": False, "e": False, "c": zlib.crc32(data)};
+    msg = json.dumps(jsonMsg)
+    SENDING_BUFFER[SEQUENCE] = {"message": jsonMsg, "timeout":getTimestamp() + 2*RTT, "duplicates": 0};
+    SEQUENCE += len(data)
+
+    if sock.sendto(msg, dest) < len(msg):
+      log("[error] unable to fully send packet")
+    else:
+      log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
+    return True
+  
+  return False
+
+# resends message given to it in json form
+def resend_packet(msg):
+  if sock.sendto(json.dumps(msg), dest) < len(msg):
+    log("[error] unable to fully send packet")
+  else:
+    log("[resend data] " + str(msg['s']) + " (" + str(len(msg['d'])) + ")")
+
+def check_timeouts():
+  global SENDING_BUFFER
+  global SENT_ALL_DATA_ONCE
+
+  if(len(SENDING_BUFFER) == 0 and SENT_ALL_DATA_ONCE): # we've sent all data once and there is nothing left to be acked
+    return False
+
+  for key in SENDING_BUFFER:
+    bufferedMsg = SENDING_BUFFER[key]
+    if (getTimestamp() > bufferedMsg['timeout'] or bufferedMsg['duplicates'] >= 3): # message has timed out
+      resend_packet(bufferedMsg['message'])
+      SENDING_BUFFER[key]['timeout'] = getTimestamp() + 2*RTT
+      SENDING_BUFFER[key]['duplicates'] = 0
+    else:
+      break
+
+  return True
+
+def handle_ack(ack):
+  global SENDING_BUFFER
+
+  # packet was received so we can delete it from buffer
+  ack_of_sent = ack["a"]
+  if (ack_of_sent in SENDING_BUFFER.keys()):
+    del SENDING_BUFFER[ack_of_sent]
+
+  # previous packet was received so we can delete it from buffer
+  if (ack['lastAcked']):
+    last_acked = ack['lastAcked']
+    if (last_acked in SENDING_BUFFER.keys()):
+      log('one of our acks was dropped, but we got it now')
+      del SENDING_BUFFER[last_acked]
+      send_next_packet()
+
+  for key in SENDING_BUFFER.keys():
+    if (key < ack_of_sent): # a latter packet was received before these
+      SENDING_BUFFER[key]['duplicates'] += 1
+    if (key < ack['bytesAdded']): # receiver has already added this part of message
+      del SENDING_BUFFER[key]
+
+def is_not_corrupt(data):
+  return isinstance(data["a"], int) and data['c'] and data['c'] == zlib.crc32(str(data["a"]))
+
+# Send first packets
+send_next_packet()
+send_next_packet()
+send_next_packet()
+send_next_packet()
+send_next_packet()
+send_next_packet()
+send_next_packet()
+send_next_packet()
+
+# Now read in data, send packets
+while True:
+  ready, ignore, ignore2 = select.select([sock], [], [], 0.1)
+  if (ready):
+    for socket in ready:
+      data = socket.recv(MSG_SIZE)
+      decoded = json.loads(data)
+      if (is_not_corrupt(decoded)):
+        # If there is an ack, send next packet
+        if decoded["a"] != None:
+          log("[recv ack] " + str(decoded["a"]))
+          handle_ack(decoded)
+
+          # Try to send next packet; break if no more data
+          if (not send_next_packet()):
+            SENT_ALL_DATA_ONCE = True
+            break
+      else:
+        log("[recv corrupt packet]")
+        log(data)
+
+  elif (not check_timeouts()): #nothing left for us to do
+    break
+    
+sock.sendto(json.dumps({"e": True, "d": "", "s": SEQUENCE, "a": False}), dest)
+sys.exit(0)

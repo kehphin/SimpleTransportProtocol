@@ -1,0 +1,104 @@
+#!/usr/bin/python -u
+
+# Eric Ropiak & Yang Yang
+# CS3700
+# Project 3
+# Receiver Code
+
+import sys
+import socket
+import time
+import datetime
+import select
+import json
+import zlib
+
+MSG_SIZE = 1500
+TIMEOUT = 30
+BUFFERED_DATA = {}
+BYTES_ADDED = 0
+LAST_ACKED = None
+
+def log(string):
+  sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
+
+# Bind to localhost and an ephemeral port
+UDP_IP = "127.0.0.1"
+UDP_PORT = 0
+
+# Set up the socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
+sock.bind((UDP_IP, UDP_PORT))
+sock.settimeout(TIMEOUT)
+
+# Get port we bound to
+UDP_PORT = sock.getsockname()[1]
+log("[bound] " + str(UDP_PORT))
+
+# handles incoming message from sender. If this is the next data sequentially, it is added to our output, then we add
+# any subsequent stored data that we have. If it arrives out fo order we save it and qill add it later
+def handle_data(jsonMessage):
+  global BUFFERED_DATA
+  global BYTES_ADDED
+
+  if (BUFFERED_DATA.get(jsonMessage['s'])): # We have already received this message
+    log("[recv data] " + str(jsonMessage['s']) + " (" + str(len(jsonMessage['d'])) + ") DUPLCIATE")
+  else:
+    BUFFERED_DATA[jsonMessage['s']] = jsonMessage;
+    if (jsonMessage['s'] == BYTES_ADDED): #this data is next in the sequence
+      log("[recv data] " + str(jsonMessage['s']) + " (" + str(len(jsonMessage['d'])) + ") ACCEPTED (in-order)")
+      sys.stdout.write(jsonMessage['d'])
+      BYTES_ADDED += len(jsonMessage['d'])
+      add_queued_data()
+    else: #data arrived out of order
+      log("[recv data] " + str(jsonMessage['s']) + " (" + str(len(jsonMessage['d'])) + ") QUEUED (out-of-order)")
+
+# loops through our buffered data dictionary, and as long as we have the next info that we need stored, it 
+# adds that info to the output and increases the counts of bytes we have acked
+def add_queued_data():
+  global BUFFERED_DATA
+  global BYTES_ADDED
+
+  while (BUFFERED_DATA.get(BYTES_ADDED)): #we already have the next message stored in our table
+    jsonMessage = BUFFERED_DATA.get(BYTES_ADDED)
+    log("[adding stored data] " + str(jsonMessage['s']) + " (" + str(len(jsonMessage['d'])) + ") ACCEPTED (in-order)")
+    sys.stdout.write(jsonMessage['d'])
+    BYTES_ADDED += len(jsonMessage['d'])
+
+# Now listen for packets
+while True:
+  result = sock.recvfrom(MSG_SIZE)
+
+  # If nothing is ready, we hit the timeout
+  if result:
+    (data, addr) = result
+    try:
+      decoded = json.loads(data)
+
+      # If the EOF flag is set, exit
+      if (decoded['e']):
+        log("[completed]")
+        sys.exit(0)
+
+      if (decoded['c'] and decoded['d'] and decoded['c'] == zlib.crc32(decoded['d'])): #not corrupt message
+        if (decoded['d']):
+          handle_data(decoded)
+          
+        # Send back an ack to the sender
+        ack = decoded['s']# + len(decoded['d'])
+        msg = json.dumps({"a": ack, "c": zlib.crc32(str(ack)), "bytesAdded": BYTES_ADDED, "lastAcked": LAST_ACKED})
+        LAST_ACKED = ack
+        log("ABOUT TO SEND " + msg)
+        if sock.sendto(msg, addr) < len(msg):
+          log("[error] unable to fully send packet")
+
+      else:
+        log("[recv corrupt packet]")
+        log(data)
+
+    except (ValueError, KeyError, TypeError) as e:
+      log("[recv corrupt packet]")
+      raise e
+  else:
+    log("[error] timeout")
+    sys.exit(-1)

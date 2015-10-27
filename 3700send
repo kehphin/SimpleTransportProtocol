@@ -13,8 +13,7 @@ import select
 import json
 import zlib
 
-
-# Message Format
+# Sample Message Format
 # {"s": SEQUENCE, "d": data, "a": False, "e": False, "c": zlib.crc32(data)}
 # s=sequence, d=data, a=ack, e = eof, c = checksum
 

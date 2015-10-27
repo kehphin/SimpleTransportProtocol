@@ -18,6 +18,11 @@ TIMEOUT = 30
 BUFFERED_DATA = {}
 BYTES_ADDED = 0
 LAST_ACKED = None
+TOTAL_MSG_LENGTH = None
+
+# Sample Data Message
+# {"a": ack, "c": zlib.crc32(str(ack)), "b": BYTES_ADDED, "l": LAST_ACKED}
+# a=ack, c=checksum, b=bytesAdded, l=lastAcked
 
 def log(string):
   sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
@@ -50,6 +55,9 @@ def handle_data(jsonMessage):
       sys.stdout.write(jsonMessage['d'])
       BYTES_ADDED += len(jsonMessage['d'])
       add_queued_data()
+      if (BYTES_ADDED == TOTAL_MSG_LENGTH):
+        log('[recv completed]')
+        sys.exit(0)
     else: #data arrived out of order
       log("[recv data] " + str(jsonMessage['s']) + " (" + str(len(jsonMessage['d'])) + ") QUEUED (out-of-order)")
 
@@ -65,6 +73,16 @@ def add_queued_data():
     sys.stdout.write(jsonMessage['d'])
     BYTES_ADDED += len(jsonMessage['d'])
 
+def send_ack(ack):
+  global LAST_ACKED
+
+  msg = json.dumps({"a": ack, "c": zlib.crc32(str(ack)), "b": BYTES_ADDED, "l": LAST_ACKED})
+  log('asdfasdfadfsaff ' + msg)
+  LAST_ACKED = ack
+  log("ABOUT TO SEND " + msg)
+  if sock.sendto(msg, addr) < len(msg):
+    log("[error] unable to fully send packet")
+
 # Now listen for packets
 while True:
   result = sock.recvfrom(MSG_SIZE)
@@ -73,24 +91,23 @@ while True:
   if result:
     (data, addr) = result
     try:
+      log('===========' + data + '==========')
       decoded = json.loads(data)
 
       # If the EOF flag is set, exit
-      if (decoded['e']):
-        log("[completed]")
-        sys.exit(0)
+      if ('e' in decoded):
+        send_ack(decoded['e'])
+        if decoded['e'] == BYTES_ADDED:
+          log("[recv completed]")
+          sys.exit(0)
+        else:
+          TOTAL_MSG_LENGTH = decoded['e']
 
-      if (decoded['c'] and decoded['d'] and decoded['c'] == zlib.crc32(decoded['d'])): #not corrupt message
+      elif (decoded['c'] and decoded['d'] and decoded['c'] == zlib.crc32(decoded['d'])): #not corrupt message
         if (decoded['d']):
           handle_data(decoded)
-          
-        # Send back an ack to the sender
-        ack = decoded['s']# + len(decoded['d'])
-        msg = json.dumps({"a": ack, "c": zlib.crc32(str(ack)), "bytesAdded": BYTES_ADDED, "lastAcked": LAST_ACKED})
-        LAST_ACKED = ack
-        log("ABOUT TO SEND " + msg)
-        if sock.sendto(msg, addr) < len(msg):
-          log("[error] unable to fully send packet")
+
+        send_ack(decoded['s'] ) # Send back an ack to the sender
 
       else:
         log("[recv corrupt packet]")
@@ -99,6 +116,7 @@ while True:
     except (ValueError, KeyError, TypeError) as e:
       log("[recv corrupt packet]")
       raise e
+
   else:
     log("[error] timeout")
     sys.exit(-1)

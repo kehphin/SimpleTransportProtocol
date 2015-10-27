@@ -13,9 +13,13 @@ import select
 import json
 import zlib
 
-# Sample Message Format
-# {"s": SEQUENCE, "d": data, "a": False, "e": False, "c": zlib.crc32(data)}
-# s=sequence, d=data, a=ack, e = eof, c = checksum
+# Sample Data Message
+# {"s": SEQUENCE, "d": data, c": zlib.crc32(data)}
+# s=sequence, d=data, c = checksum
+
+# Sample EOF Message
+# {"e": SEQUENCE}
+# e=eof
 
 # Contants
 MSG_SIZE = 1500
@@ -49,10 +53,11 @@ def send_next_packet():
   global SENDING_BUFFER
 
   data = sys.stdin.read(DATA_SIZE)
+  timestamp = getTimestamp()
   if (len(data) > 0):
-    jsonMsg = {"s": SEQUENCE, "d": data, "a": False, "e": False, "c": zlib.crc32(data)};
+    jsonMsg = {"s": SEQUENCE, "d": data, "c": zlib.crc32(data)};
     msg = json.dumps(jsonMsg)
-    timestamp = getTimestamp()
+    
     SENDING_BUFFER[SEQUENCE] = {"message": jsonMsg, "timeout": timestamp + 2*RTT, "timestamp": timestamp, "duplicates": 0};
     SEQUENCE += len(data)
 
@@ -61,15 +66,27 @@ def send_next_packet():
     else:
       log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
     return True
-  
-  return False
+ 
+  # send last eof packet
+  else:
+    jsonMsg = {"e": SEQUENCE}
+    SENDING_BUFFER[SEQUENCE] = {"message": jsonMsg, "timeout": timestamp + 2*RTT, "timestamp": timestamp, "duplicates": 0};
+    sock.sendto(json.dumps(jsonMsg), dest)
+
+    return False
 
 # resends message given to it in json form
 def resend_packet(msg):
+  logMsg = None
+  if 's' in msg:
+    logMsg = "[resending data] " + str(msg['s']) + " (" + str(len(msg['d'])) + ")"
+  else:
+    logMsg = "[resending eof] " + str(msg['e'])
+
   if sock.sendto(json.dumps(msg), dest) < len(msg):
     log("[error] unable to fully send packet")
   else:
-    log("[resend data] " + str(msg['s']) + " (" + str(len(msg['d'])) + ")")
+    log(logMsg)
 
 def check_timeouts():
   global SENDING_BUFFER
@@ -97,19 +114,21 @@ def updateRTT(ack):
   log('==== Last packet time: ' + str(getTimestamp() - SENDING_BUFFER[ack]['timestamp']) + ' ||| RTT: ' + str(RTT) + ' ====')
 
 
-
 def handle_ack(ack):
   global SENDING_BUFFER
+
+  log('packet received')
 
   # packet was received so we can delete it from buffer
   ack_of_sent = ack["a"]
   if (ack_of_sent in SENDING_BUFFER.keys()):
     updateRTT(ack_of_sent)
+    log('deleting' + str(ack_of_sent))
     del SENDING_BUFFER[ack_of_sent]
 
   # previous packet was received so we can delete it from buffer
-  if (ack['lastAcked']):
-    last_acked = ack['lastAcked']
+  if (ack['l']):
+    last_acked = ack['l']
     if (last_acked in SENDING_BUFFER.keys()):
       log('one of our acks was dropped, but we got it now')
       del SENDING_BUFFER[last_acked]
@@ -118,22 +137,13 @@ def handle_ack(ack):
   for key in SENDING_BUFFER.keys():
     if (key < ack_of_sent): # a latter packet was received before these
       SENDING_BUFFER[key]['duplicates'] += 1
-    if (key < ack['bytesAdded']): # receiver has already added this part of message
+    if (key < ack['b']): # receiver has already added this part of message
       del SENDING_BUFFER[key]
 
 def is_not_corrupt(data):
   return isinstance(data["a"], int) and data['c'] and data['c'] == zlib.crc32(str(data["a"]))
 
 # Send first packets
-send_next_packet()
-send_next_packet()
-send_next_packet()
-send_next_packet()
-send_next_packet()
-send_next_packet()
-send_next_packet()
-send_next_packet()
-send_next_packet()
 send_next_packet()
 send_next_packet()
 send_next_packet()
@@ -156,7 +166,7 @@ while True:
           handle_ack(decoded)
 
           # Try to send next packet; break if no more data
-          if (not send_next_packet()):
+          if (not (SENT_ALL_DATA_ONCE or send_next_packet())):
             SENT_ALL_DATA_ONCE = True
             break
       else:
@@ -165,6 +175,5 @@ while True:
 
   elif (not check_timeouts()): #nothing left for us to do
     break
-    
-sock.sendto(json.dumps({"e": True, "d": "", "s": SEQUENCE, "a": False}), dest)
+
 sys.exit(0)

@@ -1,0 +1,15 @@
+Overall, this project went a lot smoother than our previous one. We met only 2 times together to finish the project to our satisfaction.
+
+We started off a bit misguided and tried to optimize our code too early, which resulting in a lot of badly written code. Therefore, we had to go back to the drawing board and start over, making sure that the basic tests passed before trying to squeeze more performance out of our sender and receiver code.
+
+However, once we had the basic functionality working and got the code to pass all the tests, we were able to then quickly add more features to our code that made it faster and more efficient.
+
+We removed all the data fields that we didn't need to pass along through the wire, and for the data fields that we did need, we minimized the field names so less bytes would be transferred. 
+
+We added a checksum field to both sides' packets so that we knew exactly when a packet was corrupted, and also added error checking for mangled packets.
+
+We then focused on dynamically adjusting our RTT time. We would start off at 500ms, and then take the RTT of the packet that was received and adjust the RTT based on the previous RTT and the new RTT according to our custom algorithm. This enabled us to adjust to different latencies and speed up the performance if the connection was 'good'.
+
+Finally, we fiddled around with how many simultaneous packets we could send until we found a happy medium. Since the default stop and go was inefficient, we tried sending different amounts of simultaneous packets.
+
+The most challenging part of this project was handling the EOF packet. Since we had no way of guaranteeing the EOF packet would reach the receiver, nor did we have a way of guaranteeing that the EOF ACK would be sent back correctly, we struggled with ending our program correctly under a condition with high packet loss. Ultimately, we decided on sending multiple EOF packets, and hoping one would reach.
